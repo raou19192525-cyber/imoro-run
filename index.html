@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>イモロー 3D Racing - Deluxe Edition</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Arial Black', sans-serif; user-select: none; }
+        
+        /* ロード画面 */
+        #loading-screen {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: radial-gradient(circle, #2a1a4a, #000); color: #ffff00; 
+            display: flex; flex-direction: column; justify-content: center; align-items: center; z-index: 1000;
+        }
+        .spinner {
+            width: 60px; height: 60px; border: 8px solid #333; border-top: 8px solid #ffff00;
+            border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* HUD & Ranking */
+        #hud {
+            position: absolute; top: 10px; left: 10px; color: white;
+            background: rgba(0,0,0,0.5); padding: 10px; border-radius: 8px;
+            border-left: 5px solid #ffff00; pointer-events: none; z-index: 10;
+        }
+        #timer { font-size: 24px; font-weight: bold; font-family: 'Courier New', Courier, monospace; }
+
+        #ranking-board {
+            position: absolute; top: 10px; right: 10px; color: #fff;
+            background: linear-gradient(135deg, rgba(255,215,0,0.2), rgba(0,0,0,0.8));
+            padding: 10px; border-radius: 10px; border: 2px solid #ffff00;
+            box-shadow: 0 0 15px #ffff00; font-size: 12px; min-width: 140px; z-index: 10;
+        }
+        .ranking-item { margin: 5px 0; padding: 2px; border-bottom: 1px solid rgba(255,255,255,0.2); }
+        .rank-1 { color: #ffff00; font-weight: bold; text-shadow: 0 0 5px #fff; }
+
+        /* 操作ボタン */
+        .ctrl-btn {
+            position: absolute; bottom: 30px; width: 80px; height: 80px;
+            background: rgba(255,255,255,0.2); border: 3px solid #fff; border-radius: 50%;
+            color: white; font-size: 30px; font-weight: bold; display: flex;
+            justify-content: center; align-items: center; z-index: 100;
+            touch-action: none; cursor: pointer;
+        }
+        .ctrl-btn:active { background: rgba(255,255,0,0.5); transform: scale(0.9); }
+        #btn-left { left: 20px; }
+        #btn-right { left: 120px; }
+        #btn-go { right: 20px; width: 100px; height: 100px; background: rgba(255,0,0,0.4); border-color: #ff0000; font-size: 24px; color: #fff; }
+
+        #msg-screen { 
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9); display: none; flex-direction: column;
+            justify-content: center; align-items: center; z-index: 200;
+        }
+        #msg-text { color: #fff; font-size: 50px; margin-bottom: 10px; text-align: center; }
+        #retry-btn { padding: 15px 40px; font-size: 20px; cursor: pointer; background: #ffff00; border: none; border-radius: 30px; font-weight: bold; }
+        #boost-indicator { color: #ffff00; font-weight: bold; display: none; position: absolute; top: 50%; width: 100%; text-align: center; font-size: 40px; text-shadow: 0 0 20px #ff0000; z-index: 5; }
+    </style>
+</head>
+<body>
+    <div id="loading-screen">
+        <div class="spinner"></div>
+        <div style="font-size: 20px;">LOADING...</div>
+    </div>
+
+    <div id="hud">
+        <div id="timer">00:00.00</div>
+        <div id="speed-status" style="font-size: 12px; color: #ffff00;">READY</div>
+    </div>
+
+    <div id="ranking-board">
+        <div style="text-align: center; font-weight: bold; margin-bottom: 5px; color: #ffff00;">🏆 HALL OF FAME</div>
+        <div id="ranking-list"></div>
+    </div>
+
+    <!-- 追加ボタン -->
+    <div id="btn-left" class="ctrl-btn">←</div>
+    <div id="btn-right" class="ctrl-btn">→</div>
+    <div id="btn-go" class="ctrl-btn">GO!</div>
+
+    <div id="boost-indicator">NITRO BOOST!!</div>
+
+    <div id="msg-screen">
+        <div id="msg-text">RESULT</div>
+        <div id="result-time" style="color: #ffff00; font-size: 30px; margin-bottom: 30px;"></div>
+        <button id="retry-btn" onclick="location.reload()">RETRY</button>
+    </div>
+
+    <!-- オーディオは元のコードのまま -->
+    <audio id="bgm" src="魔王魂 BGM ネオロック83.mp3" loop></audio>
+    <audio id="se-hit" src="靴でブレーキ.mp3"></audio>
+    <audio id="se-goal" src="シャキーン2.mp3"></audio>
+    <audio id="se-over" src="チーン1.mp3"></audio>
+    <audio id="se-boost" src="超高速ダッシュ.mp3"></audio>
+
+    <script type="importmap">
+        {
+            "imports": {
+                "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+                "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+            }
+        }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+        import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+
+        // --- 変数定義 (変更なし) ---
+        let scene, camera, renderer, clock;
+        let modelMoving, modelIdle, mixerMoving, mixerIdle;
+        let currentSpeed = 0, isSpinning = false, isBoosting = false;
+        let startTime = null, isGameOver = false, isFinished = false;
+        let isLoading = true;
+        const keys = { w: false, a: false, d: false, ArrowUp: false, ArrowLeft: false, ArrowRight: false };
+
+        let coneMesh, coneData = [], boostPads = [], fireworks = [];
+        const CONE_COUNT = 85, BOOST_COUNT = 25;
+        const CONST_SPEED = 1.5, BOOST_SPEED = 2.5, ROAD_WIDTH = 22, GOAL_Z = -3500;
+
+        const bgm = document.getElementById('bgm');
+        const seHit = document.getElementById('se-hit');
+        const seGoal = document.getElementById('se-goal');
+        const seOver = document.getElementById('se-over');
+        const seBoost = document.getElementById('se-boost');
+
+        // --- UIイベント設定 ---
+        const btnGo = document.getElementById('btn-go');
+        const btnLeft = document.getElementById('btn-left');
+        const btnRight = document.getElementById('btn-right');
+
+        const startAction = () => { if(!startTime && !isGameOver) { startTime = Date.now(); bgm.play(); } keys.w = true; };
+        const stopAction = () => { keys.w = false; };
+
+        btnGo.addEventListener('touchstart', (e) => { e.preventDefault(); startAction(); });
+        btnGo.addEventListener('touchend', stopAction);
+        btnGo.addEventListener('mousedown', startAction);
+        btnGo.addEventListener('mouseup', stopAction);
+
+        btnLeft.addEventListener('touchstart', (e) => { e.preventDefault(); keys.a = true; });
+        btnLeft.addEventListener('touchend', () => { keys.a = false; });
+        btnLeft.addEventListener('mousedown', () => { keys.a = true; });
+        btnLeft.addEventListener('mouseup', () => { keys.a = false; });
+
+        btnRight.addEventListener('touchstart', (e) => { e.preventDefault(); keys.d = true; });
+        btnRight.addEventListener('touchend', () => { keys.d = false; });
+        btnRight.addEventListener('mousedown', () => { keys.d = true; });
+        btnRight.addEventListener('mouseup', () => { keys.d = false; });
+
+        // 元のinit/animate処理を呼び出し
+        init();
+        animate();
+        updateRankingDisplay();
+
+        setTimeout(() => {
+            isLoading = false;
+            document.getElementById('loading-screen').style.display = 'none';
+        }, 2000);
+
+        // --- 以下、ロジック部分は元のコードを維持（UI反映のみ調整） ---
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x1a0a2a);
+            scene.fog = new THREE.Fog(0x1a0a2a, 150, 600);
+            clock = new THREE.Clock();
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 5000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            scene.add(new THREE.AmbientLight(0xffffff, 1.2));
+            const sun = new THREE.DirectionalLight(0xffffff, 1.0);
+            sun.position.set(50, 100, 50);
+            sun.castShadow = true;
+            scene.add(sun);
+
+            const track = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_WIDTH, 8000), new THREE.MeshStandardMaterial({ color: 0x222222 }));
+            track.rotation.x = -Math.PI / 2;
+            track.position.z = -3000;
+            track.receiveShadow = true;
+            scene.add(track);
+
+            createEnvironment();
+            const loader = new FBXLoader();
+            const setupModel = (obj) => {
+                obj.scale.set(0.015, 0.015, 0.015);
+                obj.rotation.y = Math.PI;
+                obj.traverse(c => { if (c.isMesh) { c.castShadow = true; if(c.material) (Array.isArray(c.material) ? c.material : [c.material]).forEach(m => m.side = THREE.DoubleSide); } });
+                const m = new THREE.AnimationMixer(obj);
+                if (obj.animations.length > 0) obj.animations.forEach(clip => m.clipAction(clip).play());
+                return m;
+            };
+
+            loader.load('イモロー(アニメーション).fbx', (obj) => { modelMoving = obj; mixerMoving = setupModel(obj); modelMoving.visible = false; scene.add(modelMoving); });
+            loader.load('イモロー止まる.fbx', (obj) => { modelIdle = obj; mixerIdle = setupModel(obj); scene.add(modelIdle); });
+
+            createGimmicks(loader);
+            createGoalObjects();
+
+            window.addEventListener('keydown', e => { if(isLoading) return; keys[e.key] = true; if(!startTime && !isGameOver && (e.key === 'w' || e.key === 'ArrowUp')) { startTime = Date.now(); bgm.play(); } });
+            window.addEventListener('keyup', e => keys[e.key] = false);
+            window.addEventListener('resize', () => { camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix(); renderer.setSize(window.innerWidth, window.innerHeight); });
+        }
+
+        // 環境・ギミック生成（元のロジック維持）
+        function createEnvironment() {
+            const standGeo = new THREE.BoxGeometry(10, 8, 80);
+            for(let z = 0; z > -4000; z -= 120) {
+                ['L', 'R'].forEach(side => {
+                    const color = new THREE.Color().setHSL(Math.random(), 0.7, 0.6);
+                    const stand = new THREE.Mesh(standGeo, new THREE.MeshStandardMaterial({ color: color }));
+                    stand.position.set(side === 'L' ? -30 : 30, 4, z);
+                    scene.add(stand);
+                    const light = new THREE.PointLight(color, 30, 50);
+                    light.position.set(side === 'L' ? -20 : 20, 15, z);
+                    scene.add(light);
+                });
+            }
+        }
+
+        function createGoalObjects() {
+            const checkCanvas = document.createElement('canvas');
+            checkCanvas.width = 512; checkCanvas.height = 512;
+            const cctx = checkCanvas.getContext('2d');
+            for (let y = 0; y < 8; y++) { for (let x = 0; x < 8; x++) { cctx.fillStyle = (x + y) % 2 === 0 ? '#ffffff' : '#000000'; cctx.fillRect(x * 64, y * 64, 64, 64); } }
+            const checkTex = new THREE.CanvasTexture(checkCanvas);
+            checkTex.wrapS = checkTex.wrapT = THREE.RepeatWrapping;
+            checkTex.repeat.set(4, 1);
+            const checkLine = new THREE.Mesh(new THREE.PlaneGeometry(ROAD_WIDTH, 12), new THREE.MeshBasicMaterial({ map: checkTex }));
+            checkLine.rotation.x = -Math.PI / 2; checkLine.position.set(0, 0.2, GOAL_Z);
+            scene.add(checkLine);
+
+            const wallCanvas = document.createElement('canvas');
+            wallCanvas.width = 512; wallCanvas.height = 256;
+            const wctx = wallCanvas.getContext('2d');
+            wctx.fillStyle = 'rgba(0, 255, 0, 0.7)'; wctx.fillRect(0, 0, 512, 256);
+            wctx.font = 'Bold 120px Arial'; wctx.fillStyle = 'white'; wctx.textAlign = 'center'; wctx.textBaseline = 'middle';
+            wctx.strokeStyle = 'black'; wctx.lineWidth = 12; wctx.strokeText('GOAL!!', 256, 128); wctx.fillText('GOAL!!', 256, 128);
+            const wallTex = new THREE.CanvasTexture(wallCanvas);
+            const goalWall = new THREE.Mesh(new THREE.BoxGeometry(ROAD_WIDTH, 20, 1), new THREE.MeshStandardMaterial({ map: wallTex, transparent: true, opacity: 0.8, emissive: 0x00ff00, emissiveIntensity: 0.8 }));
+            goalWall.position.set(0, 10, GOAL_Z); goalWall.name = "goal_sensor";
+            scene.add(goalWall);
+        }
+
+        function createGimmicks(loader) {
+            const boostGeo = new THREE.PlaneGeometry(5, 3);
+            const boostMat = new THREE.MeshBasicMaterial({ color: 0xffff00, side: THREE.DoubleSide });
+            for(let i=0; i<BOOST_COUNT; i++) {
+                const px = Math.random()*(ROAD_WIDTH-6)-(ROAD_WIDTH/2-3);
+                const pz = -Math.random()*3300 - 100;
+                const pad = new THREE.Mesh(boostGeo, boostMat);
+                pad.rotation.x = -Math.PI/2; pad.position.set(px, 0.15, pz);
+                pad.name = "boost_pad"; scene.add(pad); boostPads.push({ x: px, z: pz });
+            }
+            loader.load('コーン.fbx', (baseCone) => {
+                let sourceGeometry, sourceMaterial;
+                baseCone.traverse(c => { if (c.isMesh) { sourceGeometry = c.geometry; sourceMaterial = c.material; } });
+                coneMesh = new THREE.InstancedMesh(sourceGeometry, sourceMaterial, CONE_COUNT);
+                coneMesh.castShadow = true;
+                const dummy = new THREE.Object3D();
+                let count = 0;
+                while(count < CONE_COUNT) {
+                    const cx = Math.random()*(ROAD_WIDTH-4)-(ROAD_WIDTH/2-2);
+                    const cz = -Math.random()*3300 - 100;
+                    const tooClose = boostPads.some(p => Math.sqrt((p.x-cx)**2 + (p.z-cz)**2) < 7.0);
+                    if(!tooClose) {
+                        dummy.position.set(cx, 0.2, cz); dummy.scale.set(0.015, 0.015, 0.015);
+                        dummy.rotation.y = Math.random() * Math.PI * 2; dummy.updateMatrix();
+                        coneMesh.setMatrixAt(count, dummy.matrix); coneData.push({ x: cx, z: cz });
+                        count++;
+                    }
+                }
+                scene.add(coneMesh);
+            });
+        }
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const delta = clock.getDelta();
+            if(!isGameOver && !isFinished && !isLoading) { updatePhysics(); updateTimer(); checkCourseOut(); }
+            updateModels(delta); updateFireworks(); syncCamera(); renderer.render(scene, camera);
+        }
+
+        function updatePhysics() {
+            const isPressing = keys.w || keys.ArrowUp;
+            if (isSpinning) currentSpeed = 0.2;
+            else if (isPressing) currentSpeed = isBoosting ? BOOST_SPEED : CONST_SPEED;
+            else currentSpeed = 0;
+
+            if (modelIdle && modelMoving) {
+                const active = modelMoving.visible ? modelMoving : modelIdle;
+                active.position.z -= currentSpeed;
+                if (keys.a || keys.ArrowLeft) active.position.x -= 0.45;
+                if (keys.d || keys.ArrowRight) active.position.x += 0.45;
+                if(isSpinning) active.rotation.y += 0.6; else active.rotation.y = Math.PI;
+                checkCollisions(active.position);
+                modelMoving.position.copy(active.position); modelIdle.position.copy(active.position);
+            }
+            document.getElementById('speed-status').innerText = isBoosting ? "⚡ SUPER BOOST!! ⚡" : (currentSpeed > 0 ? "RUNNING" : "READY");
+        }
+
+        function checkCollisions(pos) {
+            for(let i=0; i < coneData.length; i++) {
+                if(Math.sqrt((coneData[i].x - pos.x)**2 + (coneData[i].z - pos.z)**2) < 2.8) {
+                    if(!isSpinning) { isSpinning = true; seHit.currentTime = 0; seHit.play(); setTimeout(() => isSpinning = false, 800); }
+                    break;
+                }
+            }
+            scene.children.forEach(obj => {
+                if(obj.name === "boost_pad" && Math.sqrt((obj.position.x-pos.x)**2 + (obj.position.z-pos.z)**2) < 3.5) {
+                    if(!isBoosting) {
+                        isBoosting = true; seBoost.currentTime = 0; seBoost.play();
+                        document.getElementById('boost-indicator').style.display = 'block';
+                        setTimeout(() => { isBoosting = false; document.getElementById('boost-indicator').style.display = 'none'; }, 1000);
+                    }
+                }
+                if(obj.name === "goal_sensor" && pos.z < obj.position.z) {
+                    isFinished = true; bgm.pause(); seGoal.play(); 
+                    const finalTime = (Date.now() - startTime) / 1000;
+                    saveTime(finalTime); endGame("GOAL!!", "#00ff00");
+                }
+            });
+        }
+
+        function syncCamera() {
+            if (!modelIdle) return;
+            const target = modelIdle.position;
+            camera.fov = 75 + (currentSpeed / CONST_SPEED * 10); camera.updateProjectionMatrix();
+            camera.position.set(target.x, target.y + 7.0, target.z + 12);
+            camera.lookAt(target.x, target.y + 1.0, target.z - 30);
+        }
+
+        function checkCourseOut() {
+            if (modelIdle && Math.abs(modelIdle.position.x) > (ROAD_WIDTH / 2)) {
+                bgm.pause(); seOver.play(); endGame("COURSE OUT", "#ff0000");
+            }
+        }
+
+        function updateTimer() {
+            if(!startTime) return;
+            const diff = Date.now() - startTime;
+            const m = Math.floor(diff / 60000).toString().padStart(2, '0');
+            const s = Math.floor((diff % 60000) / 1000).toString().padStart(2, '0');
+            const ms = Math.floor((diff % 1000) / 10).toString().padStart(2, '0');
+            document.getElementById('timer').innerText = `${m}:${s}.${ms}`;
+        }
+
+        function endGame(text, color) {
+            isGameOver = true;
+            document.getElementById('msg-text').innerText = text;
+            document.getElementById('msg-text').style.textShadow = `0 0 20px ${color}`;
+            document.getElementById('result-time').innerText = "TIME: " + document.getElementById('timer').innerText;
+            document.getElementById('msg-screen').style.display = 'flex';
+        }
+
+        function updateModels(delta) {
+            const running = currentSpeed > 0.05;
+            if (modelMoving && modelIdle) {
+                modelMoving.visible = running; modelIdle.visible = !running;
+                if (running && mixerMoving) mixerMoving.update(delta * (isBoosting ? 5.5 : 4.5));
+                if (!running && mixerIdle) mixerIdle.update(delta);
+            }
+        }
+
+        function saveTime(time) {
+            let records = JSON.parse(localStorage.getItem('imoro_ranking') || '[]');
+            records.push(time); records.sort((a, b) => a - b);
+            localStorage.setItem('imoro_ranking', JSON.stringify(records.slice(0, 5)));
+            updateRankingDisplay();
+        }
+
+        function updateRankingDisplay() {
+            const records = JSON.parse(localStorage.getItem('imoro_ranking') || '[]');
+            document.getElementById('ranking-list').innerHTML = records.map((t, i) => 
+                `<div class="ranking-item ${i===0?'rank-1':''}">
+                    ${i+1}位: ${t.toFixed(2)}s
+                </div>`
+            ).join('') || "No Records";
+        }
+
+        function updateFireworks() {
+            if(isFinished && Math.random() < 0.1) launchFirework();
+            for(let i = fireworks.length - 1; i >= 0; i--) {
+                const f = fireworks[i];
+                const pos = f.mesh.geometry.attributes.position.array;
+                for(let j=0; j<50; j++) {
+                    pos[j*3] += f.vel[j*3]; pos[j*3+1] += f.vel[j*3+1]; pos[j*3+2] += f.vel[j*3+2];
+                    f.vel[j*3+1] -= 0.02;
+                }
+                f.mesh.geometry.attributes.position.needsUpdate = true;
+                f.life -= 0.01; f.mesh.material.opacity = f.life;
+                if(f.life <= 0) { scene.remove(f.mesh); fireworks.splice(i, 1); }
+            }
+        }
+
+        function launchFirework() {
+            const geo = new THREE.BufferGeometry();
+            const count = 50, pos = new Float32Array(count * 3), vel = new Float32Array(count * 3);
+            const cx = (Math.random() - 0.5) * 100, cy = 20 + Math.random() * 20, cz = modelIdle.position.z - 50;
+            for(let i=0; i<count; i++) {
+                pos[i*3] = cx; pos[i*3+1] = cy; pos[i*3+2] = cz;
+                vel[i*3] = (Math.random()-0.5)*2; vel[i*3+1] = (Math.random()-0.5)*2; vel[i*3+2] = (Math.random()-0.5)*2;
+            }
+            geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+            const points = new THREE.Points(geo, new THREE.PointsMaterial({ color: new THREE.Color().setHSL(Math.random(), 1, 0.5), size: 1.5, transparent: true }));
+            scene.add(points); fireworks.push({ mesh: points, vel: vel, life: 1.0 });
+        }
+    </script>
+</body>
+</html>
